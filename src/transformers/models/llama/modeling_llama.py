@@ -119,6 +119,11 @@ class LlamaRMSNorm(nn.Module):
 
 ALL_LAYERNORM_LAYERS.append(LlamaRMSNorm)
 
+try:
+    ALL_LAYERNORM_LAYERS.append(nn.RMSNorm)
+except Exception as ex:
+    print("Torch without native RMSNorm, proceeding with python implementation", ex)
+
 
 class LlamaRotaryEmbedding(nn.Module):
     def __init__(self, dim, max_position_embeddings=2048, base=10000, device=None):
@@ -318,6 +323,15 @@ class LlamaAttention(nn.Module):
         self.o_proj = nn.Linear(self.num_heads * self.head_dim, self.hidden_size, bias=config.attention_bias)
         self._init_rope()
 
+    def merge_qkv(self, attention_bias):
+        self.merged_proj = nn.Linear(self.hidden_size, 3 * self.num_key_value_heads * self.head_dim,
+                                     bias=attention_bias)
+        self.merged_proj.weight = nn.Parameter(
+            torch.cat((self.q_proj.weight, self.k_proj.weight, self.v_proj.weight), dim=0))
+        if attention_bias:
+            self.merged_proj.bias = nn.Parameter(
+                torch.cat((self.q_proj.bias, self.k_proj.bias, self.v_proj.bias), dim=0))
+
     def _init_rope(self):
         if self.config.rope_scaling is None:
             self.rotary_emb = LlamaRotaryEmbedding(
@@ -383,13 +397,22 @@ class LlamaAttention(nn.Module):
             value_states = torch.cat(value_states, dim=-1)
 
         else:
-            query_states = self.q_proj(hidden_states)
-            key_states = self.k_proj(hidden_states)
-            value_states = self.v_proj(hidden_states)
+            if self.merged_proj is not None:
+                merged_states = self.merged_proj(hidden_states)
+                query_states, key_states, value_states = torch.chunk(merged_states, 3, dim=-1)
+            else:
+                query_states = self.q_proj(hidden_states)
+                key_states = self.k_proj(hidden_states)
+                value_states = self.v_proj(hidden_states)
 
-        query_states = query_states.view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
-        key_states = key_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
-        value_states = value_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
+        if q_len == 1:
+            query_states = query_states.view(bsz, self.num_heads, q_len, self.head_dim)
+            key_states = key_states.view(bsz, self.num_key_value_heads, q_len, self.head_dim)
+            value_states = value_states.view(bsz, self.num_key_value_heads, q_len, self.head_dim)
+        else:
+            query_states = query_states.view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
+            key_states = key_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
+            value_states = value_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
 
         kv_seq_len = key_states.shape[-2]
         if past_key_value is not None:
@@ -436,7 +459,8 @@ class LlamaAttention(nn.Module):
                 f" {attn_output.size()}"
             )
 
-        attn_output = attn_output.transpose(1, 2).contiguous()
+        if q_len != 1:
+            attn_output = attn_output.transpose(1, 2).contiguous()
 
         attn_output = attn_output.reshape(bsz, q_len, self.hidden_size)
 
@@ -756,8 +780,16 @@ class LlamaDecoderLayer(nn.Module):
         self.self_attn = LLAMA_ATTENTION_CLASSES[config._attn_implementation](config=config, layer_idx=layer_idx)
 
         self.mlp = LlamaMLP(config)
-        self.input_layernorm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        self.post_attention_layernorm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        try:
+            self.input_layernorm = nn.RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+            self.post_attention_layernorm = nn.RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        except Exception as _:
+            self.input_layernorm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+            self.post_attention_layernorm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+
+    def merge_qkv(self, attention_bias):
+        if type(self.self_attn) == LlamaAttention:
+            self.self_attn.merge_qkv(attention_bias)
 
     def forward(
         self,
@@ -957,7 +989,10 @@ class LlamaModel(LlamaPreTrainedModel):
         )
         self._use_sdpa = config._attn_implementation == "sdpa"
         self._use_flash_attention_2 = config._attn_implementation == "flash_attention_2"
-        self.norm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        try:
+            self.norm = nn.RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        except Exception as _:
+            self.norm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
         self.gradient_checkpointing = False
         # Initialize weights and apply final processing
@@ -968,6 +1003,10 @@ class LlamaModel(LlamaPreTrainedModel):
 
     def set_input_embeddings(self, value):
         self.embed_tokens = value
+
+    def merge_qkv(self, attention_bias):
+        for layer in self.layers:
+            layer.merge_qkv(attention_bias)
 
     @add_start_docstrings_to_model_forward(LLAMA_INPUTS_DOCSTRING)
     def forward(
@@ -1109,6 +1148,7 @@ class LlamaForCausalLM(LlamaPreTrainedModel):
         self.model = LlamaModel(config)
         self.vocab_size = config.vocab_size
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
+        self.attention_bias = config.attention_bias
 
         # Initialize weights and apply final processing
         self.post_init()
@@ -1130,6 +1170,10 @@ class LlamaForCausalLM(LlamaPreTrainedModel):
 
     def get_decoder(self):
         return self.model
+
+    def merge_qkv(self):
+        for layer in self.model.layers:
+            layer.merge_qkv(self.attention_bias)
 
     @add_start_docstrings_to_model_forward(LLAMA_INPUTS_DOCSTRING)
     @replace_return_docstrings(output_type=CausalLMOutputWithPast, config_class=_CONFIG_FOR_DOC)

@@ -129,6 +129,7 @@ class LlamaRMSNorm(nn.Module):
 
 
 ALL_LAYERNORM_LAYERS.append(LlamaRMSNorm)
+ALL_LAYERNORM_LAYERS.append(nn.RMSNorm)
 
 
 class LlamaRotaryEmbedding(nn.Module):
@@ -361,6 +362,12 @@ class LlamaAttention(nn.Module):
         # TODO (joao): remove in v4.45 (RoPE is computed in the model, not in the decoder layers)
         self.rotary_emb = LlamaRotaryEmbedding(config=self.config)
 
+        try:
+            torch.aio_rope
+            self.aio_rope = True
+        except Exception as _:
+            self.aio_rope = False
+
     def forward(
         self,
         hidden_states: torch.Tensor,
@@ -397,9 +404,14 @@ class LlamaAttention(nn.Module):
             key_states = self.k_proj(hidden_states)
             value_states = self.v_proj(hidden_states)
 
-        query_states = query_states.view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
-        key_states = key_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
-        value_states = value_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
+        if q_len == 1:
+            query_states = query_states.view(bsz, self.num_heads, q_len, self.head_dim)
+            key_states = key_states.view(bsz, self.num_key_value_heads, q_len, self.head_dim)
+            value_states = value_states.view(bsz, self.num_key_value_heads, q_len, self.head_dim)
+        else:
+            query_states = query_states.view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
+            key_states = key_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
+            value_states = value_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
 
         if position_embeddings is None:
             logger.warning_once(
@@ -409,9 +421,15 @@ class LlamaAttention(nn.Module):
                 "removed and `position_embeddings` will be mandatory."
             )
             cos, sin = self.rotary_emb(value_states, position_ids)
+
+            if self.aio_rope:
+                query_states = torch.aio_rope(query_states, position_ids, self.rope_theta)
+                key_states = torch.aio_rope(key_states, position_ids, self.rope_theta)
+
         else:
             cos, sin = position_embeddings
-        query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
+        if not self.aio_rope:
+            query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
 
         if past_key_value is not None:
             # sin and cos are specific to RoPE models; cache_position needed for the static cache
@@ -438,7 +456,8 @@ class LlamaAttention(nn.Module):
                 f" {attn_output.size()}"
             )
 
-        attn_output = attn_output.transpose(1, 2).contiguous()
+        if q_len != 1:
+            attn_output = attn_output.transpose(1, 2).contiguous()
 
         attn_output = attn_output.reshape(bsz, q_len, -1)
 
@@ -689,8 +708,12 @@ class LlamaDecoderLayer(nn.Module):
         self.self_attn = LLAMA_ATTENTION_CLASSES[config._attn_implementation](config=config, layer_idx=layer_idx)
 
         self.mlp = LlamaMLP(config)
-        self.input_layernorm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        self.post_attention_layernorm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        try:
+            self.input_layernorm = nn.RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+            self.post_attention_layernorm = nn.RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        except Exception as _:
+            self.input_layernorm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+            self.post_attention_layernorm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
     def forward(
         self,
@@ -901,7 +924,10 @@ class LlamaModel(LlamaPreTrainedModel):
         self.layers = nn.ModuleList(
             [LlamaDecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
         )
-        self.norm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        try:
+            self.norm = nn.RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        except Exception as _:
+            self.norm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.rotary_emb = LlamaRotaryEmbedding(config=config)
         self.gradient_checkpointing = False
 
@@ -1116,6 +1142,7 @@ class LlamaForCausalLM(LlamaPreTrainedModel):
         self.model = LlamaModel(config)
         self.vocab_size = config.vocab_size
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
+        self.attention_bias = config.attention_bias
 
         # Initialize weights and apply final processing
         self.post_init()

@@ -126,6 +126,8 @@ NEED_SETUP_CACHE_CLASSES_MAPPING = {
 }
 QUANT_BACKEND_CLASSES_MAPPING = {"quanto": QuantoQuantizedCache, "HQQ": HQQQuantizedCache}
 
+aml_runner = None
+
 
 @dataclass
 class GenerateDecoderOnlyOutput(ModelOutput):
@@ -2967,6 +2969,7 @@ class GenerationMixin:
         this_peer_finished = False
         unfinished_sequences = torch.ones(batch_size, dtype=torch.long, device=input_ids.device)
         model_kwargs = self._get_initial_cache_position(input_ids, model_kwargs)
+        first_pass = True
 
         while self._has_unfinished_sequences(
             this_peer_finished, synced_gpus, device=input_ids.device, cur_len=cur_len, max_length=max_length
@@ -2978,8 +2981,22 @@ class GenerationMixin:
             model_inputs.update({"output_attentions": output_attentions} if output_attentions else {})
             model_inputs.update({"output_hidden_states": output_hidden_states} if output_hidden_states else {})
 
+            if aml_runner is not None:
+                if first_pass:
+                    prompt_length = sum([len(x) for x in input_ids])
+                    aml_runner.start_subcategory_measurement("prompt_eval")
+                else:
+                    batch_size = len(input_ids)
+                    aml_runner.start_subcategory_measurement("token_gen")
+
             # forward pass to get next token
             outputs = self(**model_inputs, return_dict=True)
+            if aml_runner is not None:
+                if first_pass:
+                    aml_runner.finish_subcategory_measurement("prompt_eval", prompt_length)
+                    first_pass = False
+                else:
+                    aml_runner.finish_subcategory_measurement("token_gen", batch_size)
 
             if synced_gpus and this_peer_finished:
                 continue  # don't waste resources running the code we don't need
@@ -3017,6 +3034,15 @@ class GenerationMixin:
             if do_sample:
                 probs = nn.functional.softmax(next_token_scores, dim=-1)
                 # TODO (joao): this OP throws "skipping cudagraphs due to ['incompatible ops']", find solution
+
+                # hack to get llama2 to work for bs > 1
+                nans = torch.isnan(probs)
+                if nans.any():
+                    idx = torch.argwhere(torch.sum(nans, 1))
+                    z = torch.zeros_like(probs[idx][0])
+                    z[0][2] = 1.  # make eos token (</s>) have prob of 1.
+                    probs[idx] = z
+
                 next_tokens = torch.multinomial(probs, num_samples=1).squeeze(1)
             else:
                 next_tokens = torch.argmax(next_token_scores, dim=-1)

@@ -2899,8 +2899,9 @@ class GenerationMixin:
             nans = torch.isnan(probs)
             if nans.any():
                 idx = torch.argwhere(torch.sum(nans, 1))
-                probs[idx] = torch.zeros_like(probs[idx][0])
-                probs[idx][0][2] = 1.  # make eos token (</s>) have prob of 1.
+                z = torch.zeros_like(probs[idx][0])
+                z[0][2] = 1.  # make eos token (</s>) have prob of 1.
+                probs[idx] = z
 
             next_tokens = torch.multinomial(probs, num_samples=1).squeeze(1)
 

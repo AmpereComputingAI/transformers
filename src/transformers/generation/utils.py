@@ -2894,6 +2894,14 @@ class GenerationMixin:
 
             # sample
             probs = nn.functional.softmax(next_token_scores, dim=-1)
+
+            # hack to get llama2 to work for bs > 1
+            nans = torch.isnan(probs)
+            if nans.any():
+                idx = torch.argwhere(torch.sum(nans, 1))
+                probs[idx] = torch.zeros_like(probs[idx][0])
+                probs[idx][0][2] = 1.  # make eos token (</s>) have prob of 1.
+
             next_tokens = torch.multinomial(probs, num_samples=1).squeeze(1)
 
             # finished sentences should have their next token be a padding token

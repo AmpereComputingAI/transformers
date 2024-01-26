@@ -728,8 +728,8 @@ class MixtralSparseMoeBlock(nn.Module):
 
         # One hot encode the selected experts to create an expert mask
         # this will be used to easily index which expert is going to be sollicitated
-        print(selected_experts)
-        expert_mask = torch.nn.functional.one_hot(selected_experts, num_classes=self.num_experts).permute(2, 1, 0)
+        print(self.num_experts, selected_experts)
+        expert_mask = torch.nn.functional.one_hot(selected_experts, num_classes=self.num_experts)
         print(expert_mask)
         expert_mask = expert_mask.permute(2, 1, 0)
         print(expert_mask)

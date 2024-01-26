@@ -731,12 +731,16 @@ class MixtralSparseMoeBlock(nn.Module):
         #expert_mask = torch.nn.functional.one_hot(selected_experts, num_classes=self.num_experts).permute(2, 1, 0)
         
         expert_mask = torch.zeros(selected_experts.shape[0], self.num_experts, *selected_experts.shape[1:], dtype=torch.long)
-        expert_mask.scatter_(1, selected_experts.unsqueeze(1), 1).permute(1, 2, 0)
+        expert_mask.scatter_(1, selected_experts.unsqueeze(1), 1)
+        expert_mask = expert_mask.permute(1, 2, 0)
 
         # Loop over all available experts in the model and perform the computation on each expert
         for expert_idx in range(self.num_experts):
             expert_layer = self.experts[expert_idx]
             idx, top_x = torch.where(expert_mask[expert_idx])
+            print("expert_mask", expert_mask)
+            print("expert_idx", expert_idx)
+            print("idx, top_x", idx, top_x)
 
             if top_x.shape[0] == 0:
                 continue

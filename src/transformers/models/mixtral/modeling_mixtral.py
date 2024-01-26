@@ -770,6 +770,36 @@ class MixtralDecoderLayer(nn.Module):
         self.input_layernorm = MixtralRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.post_attention_layernorm = MixtralRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
+    def forward_2(
+        self,
+        hidden_states: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        past_key_value: Optional[Tuple[torch.Tensor]] = None,
+        output_attentions: Optional[bool] = False,
+        use_cache: Optional[bool] = False,
+    ):
+        residual = hidden_states
+
+        hidden_states = self.input_layernorm(hidden_states)
+
+        # Self Attention
+        hidden_states, self_attn_weights, present_key_value = self.self_attn(
+            hidden_states=hidden_states,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            past_key_value=past_key_value,
+            output_attentions=output_attentions,
+            use_cache=use_cache,
+        )
+        hidden_states = residual + hidden_states
+
+        # Fully Connected
+        residual = hidden_states
+        hidden_states = self.post_attention_layernorm(hidden_states)
+
+        return hidden_states, self_attn_weights, present_key_value
+
     def forward(
         self,
         hidden_states: torch.Tensor,
@@ -802,7 +832,10 @@ class MixtralDecoderLayer(nn.Module):
                 (see `past_key_values`).
         """
 
+        hidden_states, self_attn_weights, present_key_value = self.forward_2(hidden_states, attention_mask, position_ids, past_key_value, output_attentions, use_cache)
+        
         residual = hidden_states
+        """
 
         hidden_states = self.input_layernorm(hidden_states)
 
@@ -820,6 +853,7 @@ class MixtralDecoderLayer(nn.Module):
         # Fully Connected
         residual = hidden_states
         hidden_states = self.post_attention_layernorm(hidden_states)
+        """
         hidden_states, router_logits = self.block_sparse_moe(hidden_states)
         hidden_states = residual + hidden_states
 

@@ -2800,8 +2800,11 @@ class GenerationMixin:
         ```"""
         # AML part
         if aml_runner is not None:
-            aml_runner.add_subcategory("prompt_eval")
-            aml_runner.add_subcategory("token_gen")
+            try:
+                aml_runner.add_subcategory("prompt_eval")
+                aml_runner.add_subcategory("token_gen")
+            except AssertionError:
+                pass
         # init values
         logits_processor = logits_processor if logits_processor is not None else LogitsProcessorList()
         stopping_criteria = stopping_criteria if stopping_criteria is not None else StoppingCriteriaList()

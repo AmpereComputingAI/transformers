@@ -2872,6 +2872,7 @@ class GenerationMixin:
                     prompt_length = sum([len(x) for x in input_ids])
                     aml_runner.start_subcategory_measurement("prompt_eval")
                 else:
+                    batch_size = len(input_ids)
                     aml_runner.start_subcategory_measurement("token_gen")
             # forward pass to get next token
             outputs = self(
@@ -2885,7 +2886,7 @@ class GenerationMixin:
                     aml_runner.finish_subcategory_measurement("prompt_eval", prompt_length)
                     first_pass = False
                 else:
-                    aml_runner.finish_subcategory_measurement("token_gen", 1)
+                    aml_runner.finish_subcategory_measurement("token_gen", batch_size)
 
             if synced_gpus and this_peer_finished:
                 continue  # don't waste resources running the code we don't need

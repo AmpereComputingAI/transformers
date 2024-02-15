@@ -95,6 +95,7 @@ if is_accelerate_available():
 NEED_SETUP_CACHE_CLASSES_MAPPING = {
     "static": StaticCache,
 }
+aml_runner = None
 
 
 @dataclass
@@ -2629,6 +2630,13 @@ class GenerationMixin:
         >>> tokenizer.batch_decode(outputs, skip_special_tokens=True)
         ['Today is a beautiful day, and we must do everything possible to make it a day of celebration.']
         ```"""
+        # AML part
+        if aml_runner is not None:
+            try:
+                aml_runner.add_subcategory("prompt_eval")
+                aml_runner.add_subcategory("token_gen")
+            except AssertionError:
+                pass
         # init values
         logits_processor = logits_processor if logits_processor is not None else LogitsProcessorList()
         stopping_criteria = stopping_criteria if stopping_criteria is not None else StoppingCriteriaList()
@@ -2677,6 +2685,7 @@ class GenerationMixin:
         unfinished_sequences = torch.ones(input_ids.shape[0], dtype=torch.long, device=input_ids.device)
 
         this_peer_finished = False  # used by synced_gpus only
+        first_pass = True
         # auto-regressive generation
         while True:
             if synced_gpus:
@@ -2692,6 +2701,12 @@ class GenerationMixin:
             # prepare model inputs
             model_inputs = self.prepare_inputs_for_generation(input_ids, **model_kwargs)
 
+            if aml_runner is not None:
+                if first_pass:
+                    prompt_length = sum([len(x) for x in input_ids])
+                    aml_runner.start_subcategory_measurement("prompt_eval")
+                else:
+                    aml_runner.start_subcategory_measurement("token_gen")
             # forward pass to get next token
             outputs = self(
                 **model_inputs,
@@ -2699,6 +2714,12 @@ class GenerationMixin:
                 output_attentions=output_attentions,
                 output_hidden_states=output_hidden_states,
             )
+            if aml_runner is not None:
+                if first_pass:
+                    aml_runner.finish_subcategory_measurement("prompt_eval", prompt_length)
+                    first_pass = False
+                else:
+                    aml_runner.finish_subcategory_measurement("token_gen", 1)
 
             if synced_gpus and this_peer_finished:
                 continue  # don't waste resources running the code we don't need

@@ -2869,6 +2869,7 @@ class GenerationMixin:
 
             if aml_runner is not None:
                 if first_pass:
+                    prompt_length = sum([len(x) for x in input_ids])
                     aml_runner.start_subcategory_measurement("prompt_eval")
                 else:
                     aml_runner.start_subcategory_measurement("token_gen")
@@ -2881,7 +2882,7 @@ class GenerationMixin:
             )
             if aml_runner is not None:
                 if first_pass:
-                    aml_runner.finish_subcategory_measurement("prompt_eval", 256)
+                    aml_runner.finish_subcategory_measurement("prompt_eval", prompt_length)
                     first_pass = False
                 else:
                     aml_runner.finish_subcategory_measurement("token_gen", 1)

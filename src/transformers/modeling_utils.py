@@ -3781,6 +3781,7 @@ class PreTrainedModel(nn.Module, ModuleUtilsMixin, GenerationMixin, PushToHubMix
             config.quantization_config = GPTQConfig.from_dict_optimum(quantizer.to_dict())
             model._is_quantized_training_enabled = True
         if quantization_method_from_config == QuantizationMethod.GPTQ:
+            quantizer.disable_exllama = True
             model = quantizer.post_init_model(model)
 
         if _adapter_model_path is not None:

@@ -323,6 +323,7 @@ class LlamaAttention(nn.Module):
         self.o_proj = nn.Linear(self.num_heads * self.head_dim, self.hidden_size, bias=config.attention_bias)
         self.merged_proj = None
         self._init_rope()
+        self.merged_proj = None
 
     def _init_rope(self):
         if self.config.rope_scaling is None:

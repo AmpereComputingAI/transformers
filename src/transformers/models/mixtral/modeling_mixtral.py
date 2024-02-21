@@ -729,7 +729,7 @@ class MixtralSparseMoeBlock(nn.Module):
         # One hot encode the selected experts to create an expert mask
         # this will be used to easily index which expert is going to be sollicitated
 
-        # Karol (one_hot is not supported by torch.compile, replace it with equivalent computation using scatter)
+        # (Karol) one_hot is not supported by torch.compile, replace it with equivalent computation using scatter
         # expert_mask = torch.nn.functional.one_hot(selected_experts, num_classes=self.num_experts).permute(2, 1, 0)
         expert_mask = torch.zeros(selected_experts.shape[0], self.num_experts, *selected_experts.shape[1:], dtype=torch.long)
         expert_mask = expert_mask.scatter_(1, selected_experts.unsqueeze(1), 1).permute(1, 2, 0)
@@ -743,14 +743,15 @@ class MixtralSparseMoeBlock(nn.Module):
                 continue
 
             # in torch it is faster to index using lists than torch tensors
-            top_x_list = top_x.tolist()
-            idx_list = idx.tolist()
+            # (Karol) torch.compile doesn't like to_list
+            #top_x_list = top_x.tolist()
+            #idx_list = idx.tolist()
 
             # Index the correct hidden states and compute the expert hidden state for
             # the current expert. We need to make sure to multiply the output hidden
             # states by `routing_weights` on the corresponding tokens (top-1 and top-2)
-            current_state = hidden_states[None, top_x_list].reshape(-1, hidden_dim)
-            current_hidden_states = expert_layer(current_state, routing_weights[top_x_list, idx_list, None])
+            current_state = hidden_states[None, top_x].reshape(-1, hidden_dim)
+            current_hidden_states = expert_layer(current_state, routing_weights[top_x, idx, None])
 
             # However `index_add_` only support torch tensors for indexing so we'll use
             # the `top_x` tensor here.

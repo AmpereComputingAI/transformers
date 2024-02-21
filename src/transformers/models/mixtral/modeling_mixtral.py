@@ -893,8 +893,12 @@ class MixtralDecoderLayer(nn.Module):
         self.self_attn = MIXTRAL_ATTENTION_CLASSES[config._attn_implementation](config, layer_idx)
 
         self.block_sparse_moe = MixtralSparseMoeBlock(config)
-        self.input_layernorm = MixtralRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        self.post_attention_layernorm = MixtralRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        try:
+            self.input_layernorm = nn.RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+            self.post_attention_layernorm = nn.RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        except Exception as _:
+            self.input_layernorm = MixtralRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+            self.post_attention_layernorm = MixtralRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
     def forward(
         self,
@@ -1097,7 +1101,10 @@ class MixtralModel(MixtralPreTrainedModel):
             [MixtralDecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
         )
         self._attn_implementation = config._attn_implementation
-        self.norm = MixtralRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        try:
+            self.norm = nn.RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        except Exception as _:
+            self.norm = MixtralRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
         self.gradient_checkpointing = False
         # Initialize weights and apply final processing

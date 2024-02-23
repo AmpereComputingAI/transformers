@@ -284,26 +284,17 @@ class LlamaAttention(nn.Module):
         self.rope_theta = config.rope_theta
         self.is_causal = True
 
-        if (self.head_dim * self.num_heads) != self.hidden_size:
-            raise ValueError(
-                f"hidden_size must be divisible by num_heads (got `hidden_size`: {self.hidden_size}"
-                f" and `num_heads`: {self.num_heads})."
-            )
+        #if (self.head_dim * self.num_heads) != self.hidden_size:
+        #    raise ValueError(
+        #        f"hidden_size must be divisible by num_heads (got `hidden_size`: {self.hidden_size}"
+        #        f" and `num_heads`: {self.num_heads})."
+        #    )
 
         self.q_proj = nn.Linear(self.hidden_size, self.num_heads * self.head_dim, bias=config.attention_bias)
         self.k_proj = nn.Linear(self.hidden_size, self.num_key_value_heads * self.head_dim, bias=config.attention_bias)
         self.v_proj = nn.Linear(self.hidden_size, self.num_key_value_heads * self.head_dim, bias=config.attention_bias)
         self.o_proj = nn.Linear(self.hidden_size, self.hidden_size, bias=config.attention_bias)
         self._init_rope()
-
-    def merge_qkv(self, attention_bias):
-        self.merged_proj = nn.Linear(self.hidden_size, 3 * self.num_key_value_heads * self.head_dim,
-                                     bias=attention_bias)
-        self.merged_proj.weight = nn.Parameter(
-            torch.cat((self.q_proj.weight, self.k_proj.weight, self.v_proj.weight), dim=0))
-        if attention_bias:
-            self.merged_proj.bias = nn.Parameter(
-                torch.cat((self.q_proj.bias, self.k_proj.bias, self.v_proj.bias), dim=0))
 
     def _init_rope(self):
         if self.config.rope_scaling is None:
@@ -361,15 +352,11 @@ class LlamaAttention(nn.Module):
 
             value_states = [F.linear(hidden_states, value_slices[i]) for i in range(self.config.pretraining_tp)]
             value_states = torch.cat(value_states, dim=-1)
-
+            
         else:
-            if self.merged_proj is not None:
-                merged_states = self.merged_proj(hidden_states)
-                query_states, key_states, value_states = torch.chunk(merged_states, 3, dim=-1)
-            else:
-                query_states = self.q_proj(hidden_states)
-                key_states = self.k_proj(hidden_states)
-                value_states = self.v_proj(hidden_states)
+            query_states = self.q_proj(hidden_states)
+            key_states = self.k_proj(hidden_states)
+            value_states = self.v_proj(hidden_states)
 
         if q_len == 1:
             query_states = query_states.view(bsz, self.num_heads, q_len, self.head_dim)
@@ -405,11 +392,11 @@ class LlamaAttention(nn.Module):
         attn_weights = nn.functional.dropout(attn_weights, p=self.attention_dropout, training=self.training)
         attn_output = torch.matmul(attn_weights, value_states)
 
-        if attn_output.size() != (bsz, self.num_heads, q_len, self.head_dim):
-            raise ValueError(
-                f"`attn_output` should be of size {(bsz, self.num_heads, q_len, self.head_dim)}, but is"
-                f" {attn_output.size()}"
-            )
+        #if attn_output.size() != (bsz, self.num_heads, q_len, self.head_dim):
+        #    raise ValueError(
+        #        f"`attn_output` should be of size {(bsz, self.num_heads, q_len, self.head_dim)}, but is"
+        #        f" {attn_output.size()}"
+        #    )
 
         if q_len != 1:
             attn_output = attn_output.transpose(1, 2).contiguous()
@@ -730,10 +717,6 @@ class LlamaDecoderLayer(nn.Module):
             self.input_layernorm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
             self.post_attention_layernorm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
-    def merge_qkv(self, attention_bias):
-        if type(self.self_attn) == LlamaAttention:
-            self.self_attn.merge_qkv(attention_bias)
-
     def forward(
         self,
         hidden_states: torch.Tensor,
@@ -976,10 +959,6 @@ class LlamaModel(LlamaPreTrainedModel):
     def set_input_embeddings(self, value):
         self.embed_tokens = value
 
-    def merge_qkv(self, attention_bias):
-        for layer in self.layers:
-            layer.merge_qkv(attention_bias)
-
     @add_start_docstrings_to_model_forward(LLAMA_INPUTS_DOCSTRING)
     def forward(
         self,
@@ -1164,10 +1143,6 @@ class LlamaForCausalLM(LlamaPreTrainedModel):
 
     def get_decoder(self):
         return self.model
-
-    def merge_qkv(self):
-        for layer in self.model.layers:
-            layer.merge_qkv(self.attention_bias)
 
     @add_start_docstrings_to_model_forward(LLAMA_INPUTS_DOCSTRING)
     @replace_return_docstrings(output_type=CausalLMOutputWithPast, config_class=_CONFIG_FOR_DOC)

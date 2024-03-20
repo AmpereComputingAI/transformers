@@ -1291,6 +1291,11 @@ class PreTrainedModel(nn.Module, ModuleUtilsMixin, GenerationMixin, PushToHubMix
 
             # If a config is passed with a preset attn_implementation, we skip the automatic dispatch and use the user-provided config, with hard checks that the requested attention implementation is available.
             requested_attn_implementation = config._attn_implementation_internal
+        
+        # (karol): In AIO we support only eager for now
+        config._attn_implementation = "eager"
+
+        return config
 
         if use_flash_attention_2:
             logger.warning_once(

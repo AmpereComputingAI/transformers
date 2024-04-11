@@ -320,12 +320,12 @@ class MixtralAttention(nn.Module):
 
         kv_seq_len = key_states.shape[-2]
         if past_key_value is not None:
-            if self.layer_idx is None:
-                raise ValueError(
-                    f"The cache structure has changed since version v4.36. If you are using {self.__class__.__name__} "
-                    "for auto-regressive decoding with k/v caching, please make sure to initialize the attention class "
-                    "with a layer index."
-                )
+            #if self.layer_idx is None:
+            #    raise ValueError(
+            #        f"The cache structure has changed since version v4.36. If you are using {self.__class__.__name__} "
+            #        "for auto-regressive decoding with k/v caching, please make sure to initialize the attention class "
+            #        "with a layer index."
+            #    )
             kv_seq_len += past_key_value.get_usable_length(kv_seq_len, self.layer_idx)
         cos, sin = self.rotary_emb(value_states, seq_len=kv_seq_len)
         if self.aio_rope:
@@ -344,17 +344,17 @@ class MixtralAttention(nn.Module):
 
         attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) / math.sqrt(self.head_dim)
 
-        if attn_weights.size() != (bsz, self.num_heads, q_len, kv_seq_len):
-            raise ValueError(
-                f"Attention weights should be of size {(bsz, self.num_heads, q_len, kv_seq_len)}, but is"
-                f" {attn_weights.size()}"
-            )
+        #if attn_weights.size() != (bsz, self.num_heads, q_len, kv_seq_len):
+            #raise ValueError(
+            #    f"Attention weights should be of size {(bsz, self.num_heads, q_len, kv_seq_len)}, but is"
+            #    f" {attn_weights.size()}"
+            #)
 
         if attention_mask is not None:
-            if attention_mask.size() != (bsz, 1, q_len, kv_seq_len):
-                raise ValueError(
-                    f"Attention mask should be of size {(bsz, 1, q_len, kv_seq_len)}, but is {attention_mask.size()}"
-                )
+            #if attention_mask.size() != (bsz, 1, q_len, kv_seq_len):
+            #    raise ValueError(
+            #        f"Attention mask should be of size {(bsz, 1, q_len, kv_seq_len)}, but is {attention_mask.size()}"
+            #    )
 
             attn_weights = attn_weights + attention_mask
 
@@ -1067,12 +1067,12 @@ class MixtralModel(MixtralPreTrainedModel):
 
         if attention_mask is not None and self._use_flash_attention_2 and use_cache:
             is_padding_right = attention_mask[:, -1].sum().item() != batch_size
-            if is_padding_right:
-                raise ValueError(
-                    "You are attempting to perform batched generation with padding_side='right'"
-                    " this may lead to unexpected behaviour for Flash Attention version of Mixtral. Make sure to "
-                    " call `tokenizer.padding_side  = 'left'` before tokenizing the input. "
-                )
+            #if is_padding_right:
+                #raise ValueError(
+                #    "You are attempting to perform batched generation with padding_side='right'"
+                #    " this may lead to unexpected behaviour for Flash Attention version of Mixtral. Make sure to "
+                #    " call `tokenizer.padding_side  = 'left'` before tokenizing the input. "
+                #)
 
         if self._use_flash_attention_2:
             # 2d mask is passed through the layers
@@ -1437,8 +1437,8 @@ class MixtralForSequenceClassification(MixtralPreTrainedModel):
         else:
             batch_size = inputs_embeds.shape[0]
 
-        if self.config.pad_token_id is None and batch_size != 1:
-            raise ValueError("Cannot handle batch sizes > 1 if no padding token is defined.")
+        #if self.config.pad_token_id is None and batch_size != 1:
+        #    raise ValueError("Cannot handle batch sizes > 1 if no padding token is defined.")
         if self.config.pad_token_id is None:
             sequence_lengths = -1
         else:

@@ -292,8 +292,14 @@ class LlamaAttention(nn.Module):
         self.q_proj = nn.Linear(self.hidden_size, self.num_heads * self.head_dim, bias=config.attention_bias)
         self.k_proj = nn.Linear(self.hidden_size, self.num_key_value_heads * self.head_dim, bias=config.attention_bias)
         self.v_proj = nn.Linear(self.hidden_size, self.num_key_value_heads * self.head_dim, bias=config.attention_bias)
-        self.o_proj = nn.Linear(self.hidden_size, self.hidden_size, bias=config.attention_bias)
+        self.o_proj = nn.Linear(self.num_heads * self.head_dim, self.hidden_size, bias=config.attention_bias)
+        try:
+            torch.aio_rope
+            self.aio_rope = True
+        except Exception as _:
+            self.aio_rope = False
         self._init_rope()
+
 
     def _init_rope(self):
         if self.config.rope_scaling is None:
@@ -368,7 +374,11 @@ class LlamaAttention(nn.Module):
 
         past_key_value = getattr(self, "past_key_value", past_key_value)
         cos, sin = self.rotary_emb(value_states, position_ids)
-        query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
+        if self.aio_rope:
+            query_states = torch.aio_rope(query_states, position_ids, self.rope_theta)
+            key_states = torch.aio_rope(key_states, position_ids, self.rope_theta)
+        else:
+            query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
 
         if past_key_value is not None:
             # sin and cos are specific to RoPE models; cache_position needed for the static cache

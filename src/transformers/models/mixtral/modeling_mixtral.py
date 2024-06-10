@@ -248,10 +248,14 @@ def apply_rotary_pos_emb(q, k, cos, sin, position_ids, unsqueeze_dim=1):
     Returns:
         `tuple(torch.Tensor)` comprising of the query and key tensors rotated using the Rotary Position Embedding.
     """
-    cos = cos[position_ids].unsqueeze(unsqueeze_dim)
-    sin = sin[position_ids].unsqueeze(unsqueeze_dim)
-    q_embed = (q * cos) + (rotate_half(q) * sin)
-    k_embed = (k * cos) + (rotate_half(k) * sin)
+    try:
+        q_embed = torch.aio_rope(q, position_ids, 10000)
+        k_embed = torch.aio_rope(k, position_ids, 10000)
+    except Exception as _:
+        cos = cos[position_ids].unsqueeze(unsqueeze_dim)
+        sin = sin[position_ids].unsqueeze(unsqueeze_dim)
+        q_embed = (q * cos) + (rotate_half(q) * sin)
+        k_embed = (k * cos) + (rotate_half(k) * sin)
     return q_embed, k_embed
 
 
@@ -305,7 +309,11 @@ class MixtralAttention(nn.Module):
         self.k_proj = nn.Linear(self.hidden_size, self.num_key_value_heads * self.head_dim, bias=False)
         self.v_proj = nn.Linear(self.hidden_size, self.num_key_value_heads * self.head_dim, bias=False)
         self.o_proj = nn.Linear(self.num_heads * self.head_dim, self.hidden_size, bias=False)
-
+        try:
+            torch.aio_rope
+            self.aio_rope = True
+        except Exception as _:
+            self.aio_rope = False
         self.rotary_emb = MixtralRotaryEmbedding(
             self.head_dim,
             max_position_embeddings=self.max_position_embeddings,
@@ -341,15 +349,19 @@ class MixtralAttention(nn.Module):
 
         kv_seq_len = key_states.shape[-2]
         if past_key_value is not None:
-            if self.layer_idx is None:
-                raise ValueError(
-                    f"The cache structure has changed since version v4.36. If you are using {self.__class__.__name__} "
-                    "for auto-regressive decoding with k/v caching, please make sure to initialize the attention class "
-                    "with a layer index."
-                )
+            #if self.layer_idx is None:
+            #    raise ValueError(
+            #        f"The cache structure has changed since version v4.36. If you are using {self.__class__.__name__} "
+            #        "for auto-regressive decoding with k/v caching, please make sure to initialize the attention class "
+            #        "with a layer index."
+            #    )
             kv_seq_len += past_key_value.get_usable_length(kv_seq_len, self.layer_idx)
         cos, sin = self.rotary_emb(value_states, seq_len=kv_seq_len)
-        query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin, position_ids)
+        if self.aio_rope:
+            query_states = torch.aio_rope(query_states, position_ids, self.rope_theta)
+            key_states = torch.aio_rope(key_states, position_ids, self.rope_theta)
+        else:
+            query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin, position_ids)
 
         if past_key_value is not None:
             cache_kwargs = {"sin": sin, "cos": cos}  # Specific to RoPE models
@@ -361,17 +373,17 @@ class MixtralAttention(nn.Module):
 
         attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) / math.sqrt(self.head_dim)
 
-        if attn_weights.size() != (bsz, self.num_heads, q_len, kv_seq_len):
-            raise ValueError(
-                f"Attention weights should be of size {(bsz, self.num_heads, q_len, kv_seq_len)}, but is"
-                f" {attn_weights.size()}"
-            )
+        #if attn_weights.size() != (bsz, self.num_heads, q_len, kv_seq_len):
+            #raise ValueError(
+            #    f"Attention weights should be of size {(bsz, self.num_heads, q_len, kv_seq_len)}, but is"
+            #    f" {attn_weights.size()}"
+            #)
 
         if attention_mask is not None:
-            if attention_mask.size() != (bsz, 1, q_len, kv_seq_len):
-                raise ValueError(
-                    f"Attention mask should be of size {(bsz, 1, q_len, kv_seq_len)}, but is {attention_mask.size()}"
-                )
+            #if attention_mask.size() != (bsz, 1, q_len, kv_seq_len):
+            #    raise ValueError(
+            #        f"Attention mask should be of size {(bsz, 1, q_len, kv_seq_len)}, but is {attention_mask.size()}"
+            #    )
 
             attn_weights = attn_weights + attention_mask
 
@@ -861,7 +873,11 @@ class MixtralSparseMoeBlock(nn.Module):
 
         # One hot encode the selected experts to create an expert mask
         # this will be used to easily index which expert is going to be sollicitated
-        expert_mask = torch.nn.functional.one_hot(selected_experts, num_classes=self.num_experts).permute(2, 1, 0)
+
+        # (Karol) one_hot is not supported by torch.compile, replace it with equivalent computation using scatter
+        # expert_mask = torch.nn.functional.one_hot(selected_experts, num_classes=self.num_experts).permute(2, 1, 0)
+        expert_mask = torch.zeros(selected_experts.shape[0], self.num_experts, *selected_experts.shape[1:], dtype=torch.long)
+        expert_mask = expert_mask.scatter_(1, selected_experts.unsqueeze(1), 1).permute(1, 2, 0)
 
         # Loop over all available experts in the model and perform the computation on each expert
         for expert_idx in range(self.num_experts):
@@ -889,8 +905,12 @@ class MixtralDecoderLayer(nn.Module):
         self.self_attn = MIXTRAL_ATTENTION_CLASSES[config._attn_implementation](config, layer_idx)
 
         self.block_sparse_moe = MixtralSparseMoeBlock(config)
-        self.input_layernorm = MixtralRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        self.post_attention_layernorm = MixtralRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        try:
+            self.input_layernorm = nn.RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+            self.post_attention_layernorm = nn.RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        except Exception as _:
+            self.input_layernorm = MixtralRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+            self.post_attention_layernorm = MixtralRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
     def forward(
         self,
@@ -1093,7 +1113,10 @@ class MixtralModel(MixtralPreTrainedModel):
             [MixtralDecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
         )
         self._attn_implementation = config._attn_implementation
-        self.norm = MixtralRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        try:
+            self.norm = nn.RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        except Exception as _:
+            self.norm = MixtralRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
         self.gradient_checkpointing = False
         # Initialize weights and apply final processing
@@ -1170,12 +1193,12 @@ class MixtralModel(MixtralPreTrainedModel):
 
         if attention_mask is not None and self._attn_implementation == "flash_attention_2" and use_cache:
             is_padding_right = attention_mask[:, -1].sum().item() != batch_size
-            if is_padding_right:
-                raise ValueError(
-                    "You are attempting to perform batched generation with padding_side='right'"
-                    " this may lead to unexpected behaviour for Flash Attention version of Mixtral. Make sure to "
-                    " call `tokenizer.padding_side  = 'left'` before tokenizing the input. "
-                )
+            #if is_padding_right:
+                #raise ValueError(
+                #    "You are attempting to perform batched generation with padding_side='right'"
+                #    " this may lead to unexpected behaviour for Flash Attention version of Mixtral. Make sure to "
+                #    " call `tokenizer.padding_side  = 'left'` before tokenizing the input. "
+                #)
 
         if self._attn_implementation == "flash_attention_2":
             # 2d mask is passed through the layers
@@ -1560,8 +1583,8 @@ class MixtralForSequenceClassification(MixtralPreTrainedModel):
         else:
             batch_size = inputs_embeds.shape[0]
 
-        if self.config.pad_token_id is None and batch_size != 1:
-            raise ValueError("Cannot handle batch sizes > 1 if no padding token is defined.")
+        #if self.config.pad_token_id is None and batch_size != 1:
+        #    raise ValueError("Cannot handle batch sizes > 1 if no padding token is defined.")
         if self.config.pad_token_id is None:
             sequence_lengths = -1
         else:

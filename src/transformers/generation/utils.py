@@ -14,7 +14,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import time
 import copy
 import inspect
 import warnings
@@ -2494,15 +2493,12 @@ class GenerationMixin:
             model_inputs = self.prepare_inputs_for_generation(input_ids, **model_kwargs)
 
             # forward pass to get next token
-            start = time.time()
             outputs = self(
                 **model_inputs,
                 return_dict=True,
                 output_attentions=output_attentions,
                 output_hidden_states=output_hidden_states,
             )
-            end = time.time()
-            print("Time per token", end - start)
 
             if synced_gpus and this_peer_finished:
                 continue  # don't waste resources running the code we don't need
@@ -2808,7 +2804,6 @@ class GenerationMixin:
                     batch_size = len(input_ids)
                     aml_runner.start_subcategory_measurement("token_gen")
             # forward pass to get next token
-            start = time.time()
             outputs = self(
                 **model_inputs,
                 return_dict=True,
@@ -2879,8 +2874,6 @@ class GenerationMixin:
                 model_kwargs,
                 is_encoder_decoder=self.config.is_encoder_decoder,
             )
-            end = time.time()
-            print("Time per token", end - start)
 
             unfinished_sequences = unfinished_sequences & ~stopping_criteria(input_ids, scores)
             this_peer_finished = unfinished_sequences.max() == 0
